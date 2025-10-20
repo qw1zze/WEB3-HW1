@@ -1,139 +1,95 @@
 // SPDX-License-Identifier: MIT
-// Compatible with OpenZeppelin Contracts ^5.4.0
 pragma solidity ^0.8.27;
 
-import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import {ERC20Burnable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Burnable.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {MilkiWay} from "./MilkiWay.sol";
 
 contract TokenBridge is Ownable, ReentrancyGuard {
-    event TokensBurned(
-        address indexed user,
-        uint256 amount,
+    event Deposited(
+        bytes32 indexed id, 
+        address indexed from, 
+        uint256 amount, 
         uint256 nonce,
-        uint256 timestamp
-    );
-    
-    event TokensMinted(
-        address indexed user,
-        uint256 amount,
-        uint256 nonce,
-        uint256 timestamp
-    );
-    
-    event DepositProcessed(
-        address indexed user,
-        uint256 amount,
-        uint256 nonce,
-        bool success
+        uint256 chainId,
+        uint256 blockNumber
     );
 
-    MilkiWay public immutable token;
-    
-    mapping(uint256 => bool) public processedNonces;
-    mapping(address => uint256) public userNonces;
-    
-    uint256 public minTransferAmount = 1 ether;
-    uint256 public maxTransferAmount = 1000000 ether;
+    event Released(
+        bytes32 indexed id, 
+        address indexed to, 
+        uint256 amount,
+        uint256 chainId
+    );
 
-    constructor(address _token, address initialOwner) Ownable(initialOwner) {
-        require(_token != address(0), "TokenBridge: invalid token address");
-        token = MilkiWay(_token);
-    }
+    event BridgePaused(bool paused);
+    bool public paused = false;
 
-    bool public bridgePaused = false;
+    MilkiWay public token;
+    mapping(bytes32 => bool) public processed;
+    mapping(address => uint256) public nonces;
+    
+    uint256 public constant MIN_DEPOSIT = 1e18;
+    uint256 public constant MAX_DEPOSIT = 1000000e18; 
+    
     modifier whenNotPaused() {
-        require(!bridgePaused, "TokenBridge: bridge is paused");
+        require(!paused, "Bridge is paused");
         _;
     }
 
-    modifier validAmount(uint256 amount) {
-        require(amount >= minTransferAmount, "TokenBridge: amount too small");
-        require(amount <= maxTransferAmount, "TokenBridge: amount too large");
-        _;
+    constructor(address tokenAddress) Ownable(msg.sender) {
+        token = MilkiWay(tokenAddress);
     }
 
-    function burnTokens(uint256 amount) 
-        external nonReentrant whenNotPaused validAmount(amount) 
-    {
-        require(token.balanceOf(msg.sender) >= amount, "TokenBridge: insufficient balance");
-        require(token.allowance(msg.sender, address(this)) >= amount, "TokenBridge: insufficient allowance");
+    function setToken(address tokenAddress) external onlyOwner {
+        require(tokenAddress != address(0), "Invalid address");
+        token = MilkiWay(tokenAddress);
+    }
 
-        userNonces[msg.sender]++;
-        uint256 currentNonce = userNonces[msg.sender];
+    function deposit(uint256 amount) external whenNotPaused nonReentrant {
+        require(token.balanceOf(msg.sender) >= amount, "Insufficient balance");
+        require(amount >= MIN_DEPOSIT, "Amount small");
+        require(amount <= MAX_DEPOSIT, "Amount large");
         
-        token.burnFrom(msg.sender, amount);
+        token.burn(msg.sender, amount);
         
-        emit TokensBurned(msg.sender, amount, currentNonce, block.timestamp);
-    }
-
-    function mintTokens(address user, uint256 amount, uint256 nonce) 
-        external onlyOwner nonReentrant whenNotPaused validAmount(amount) 
-    {
-        require(user != address(0), "TokenBridge: invalid user address");
-        require(!processedNonces[nonce], "TokenBridge: nonce already processed");
+        bytes32 id = keccak256(abi.encodePacked(
+            msg.sender, 
+            amount, 
+            nonces[msg.sender], 
+            block.chainid, 
+            block.number,
+            block.timestamp
+        ));
         
-        processedNonces[nonce] = true;
+        nonces[msg.sender]++;
         
-        token.mint(user, amount);
+        emit Deposited(id, msg.sender, amount, nonces[msg.sender] - 1, block.chainid, block.number);
+    }
+
+    function release(bytes32 id, address to, uint256 amount,uint256 sourceChainId) external onlyOwner whenNotPaused nonReentrant {
+        require(to != address(0), "Invalid address");
+        require(!processed[id], "In process");
+        require(amount > 0, "Wrong amount");
         
-        emit TokensMinted(user, amount, nonce, block.timestamp);
-    }
-
-    function processDeposit(address user, uint256 amount, uint256 nonce, bool success) 
-        external onlyOwner 
-    {
-        require(user != address(0), "TokenBridge: invalid user address");
-        require(!processedNonces[nonce], "TokenBridge: nonce already processed");
+        processed[id] = true;
+        token.mint(to, amount);
         
-        processedNonces[nonce] = true;
-        
-        emit DepositProcessed(user, amount, nonce, success);
+        emit Released(id, to, amount, sourceChainId);
     }
 
-    function isNonceProcessed(uint256 nonce) external view returns (bool) {
-        return processedNonces[nonce];
+    function pause() external onlyOwner {
+        paused = true;
+        emit BridgePaused(true);
     }
 
-    function getUserNonce(address user) external view returns (uint256) {
-        return userNonces[user];
+    function unpause() external onlyOwner {
+        paused = false;
+        emit BridgePaused(false);
     }
 
-    function setMinTransferAmount(uint256 _minAmount) external onlyOwner {
-        require(_minAmount > 0, "TokenBridge: min amount must be positive");
-        minTransferAmount = _minAmount;
-    }
-
-    function setMaxTransferAmount(uint256 _maxAmount) external onlyOwner {
-        require(_maxAmount > minTransferAmount, "TokenBridge: max amount must be greater than min");
-        maxTransferAmount = _maxAmount;
-    }
-
-    function pauseBridge() external onlyOwner {
-        bridgePaused = true;
-    }
-
-    function unpauseBridge() external onlyOwner {
-        bridgePaused = false;
-    }
-
-    function getTokenBalance() external view returns (uint256) {
-        return token.balanceOf(address(this));
-    }
-
-    function getBridgeInfo() external view returns (
-        address tokenAddress,
-        bool isPaused,
-        uint256 minAmount,
-        uint256 maxAmount
-    ) {
-        return (
-            address(token),
-            bridgePaused,
-            minTransferAmount,
-            maxTransferAmount
-        );
+    function getDepositId(address user, uint256 amount, uint256 nonce, uint256 chainId, uint256 blockNumber, uint256 timestamp) 
+        external pure returns (bytes32) {
+        return keccak256(abi.encodePacked(user, amount, nonce, chainId, blockNumber, timestamp));
     }
 }

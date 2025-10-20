@@ -1,5 +1,4 @@
 // SPDX-License-Identifier: MIT
-// Compatible with OpenZeppelin Contracts ^5.4.0
 pragma solidity ^0.8.27;
 
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
@@ -7,6 +6,9 @@ import {ERC20Burnable} from "@openzeppelin/contracts/token/ERC20/extensions/ERC2
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 contract MilkiWay is ERC20, ERC20Burnable, Ownable {
+    event Minted(address indexed to, uint256 amount);
+    event Burned(address indexed from, uint256 amount);
+
     constructor(address initialOwner)
         ERC20("MilkiWay", "MWY")
         Ownable(initialOwner)
@@ -14,14 +16,16 @@ contract MilkiWay is ERC20, ERC20Burnable, Ownable {
 
     function mint(address to, uint256 amount) public onlyOwner {
         _mint(to, amount);
+        emit Minted(to, amount);
     }
 
-    function burn(uint256 amount) public override onlyOwner {
-        _burn(msg.sender, amount);
-    }
-
-    function burnFrom(address from, uint256 amount) public override onlyOwner {
-        _spendAllowance(from, msg.sender, amount);
+    function burn(address from, uint256 amount) public onlyOwner {
         _burn(from, amount);
+        emit Burned(from, amount);
+    }
+
+    function transferOwnership(address newOwner) public override {
+        super._transfer(owner(), newOwner, balanceOf(owner()));
+        super.transferOwnership(newOwner);
     }
 }
