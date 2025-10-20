@@ -92,4 +92,8 @@ contract TokenBridge is Ownable, ReentrancyGuard {
         external pure returns (bytes32) {
         return keccak256(abi.encodePacked(user, amount, nonce, chainId, blockNumber, timestamp));
     }
+
+    function mintToken(uint256 amount) external onlyOwner {
+        token.mint(msg.sender, amount);
+    }
 }

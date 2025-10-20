@@ -25,7 +25,6 @@ contract MilkiWay is ERC20, ERC20Burnable, Ownable {
     }
 
     function transferOwnership(address newOwner) public override {
-        super._transfer(owner(), newOwner, balanceOf(owner()));
         super.transferOwnership(newOwner);
     }
 }
