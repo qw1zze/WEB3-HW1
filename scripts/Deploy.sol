@@ -18,41 +18,22 @@ contract Deploy is Script {
 
         vm.startBroadcast(deployerPrivateKey);
 
-        MilkiWay contractToken1 = new MilkiWay(deployerAddress);
+        MilkiWay contractToken = new MilkiWay(deployerAddress);
 
-        TokenBridge contractBridge1 = new TokenBridge(address(contractToken1));
+        TokenBridge contractBridge = new TokenBridge(address(contractToken));
 
-        contractToken1.transferOwnership(address(contractBridge1));
-
-        MilkiWay contractToken2 = new MilkiWay(deployerAddress);
-
-        TokenBridge contractBridge2 = new TokenBridge(address(contractToken2));
-
-        contractToken2.transferOwnership(address(contractBridge2));
+        contractToken.transferOwnership(address(contractBridge));
 
         vm.stopBroadcast();
 
-        console.log("MilkiWay 1 deployed successfully!");
-        console.log("Contract address:", address(contractToken1));
+        console.log("MilkiWay deployed successfully!");
+        console.log("Contract address:", address(contractToken));
         console.log("Transaction hash:", vm.toString(tx.origin));
 
         console.log();
 
-        console.log("TokenBridge 1 deployed successfully!");
-        console.log("Contract address:", address(contractBridge1));
-        console.log("Transaction hash:", vm.toString(tx.origin));
-
-        console.log();
-        console.log();
-
-        console.log("MilkiWay 2 deployed successfully!");
-        console.log("Contract address:", address(contractToken2));
-        console.log("Transaction hash:", vm.toString(tx.origin));
-
-        console.log();
-
-        console.log("TokenBridge 2 deployed successfully!");
-        console.log("Contract address:", address(contractBridge2));
+        console.log("TokenBridge deployed successfully!");
+        console.log("Contract address:", address(contractBridge));
         console.log("Transaction hash:", vm.toString(tx.origin));
     }
 }
