@@ -10,14 +10,14 @@ logger = logging.getLogger(__name__)
 CONFIG = {
     'first_network': {
         'rpc': 'https://sepolia.infura.io/v3/194b46668d4a475abad5d639357a545d',
-        'contract_address': '0x63f87ce1DCF2eA022DeEeD21334907070B54Caef',
+        'contract_address': '0x9d520F7365ae2a38DA0d85582FD7895D249Fe659',
         'abi_path': 'source_contract_abi.json',
         'chain_id': 11155111 
     },
     'second_network': {
         'rpc': 'https://sepolia.infura.io/v3/194b46668d4a475abad5d639357a545d', 
-        'contract_address': '0xe0f62a1324a0cE99c84594D9Ee20665100F30F11',
-        'abi_path': 'dest_contract_abi.json',
+        'contract_address': '0xDf47D1C7a23459966182Bc1d4d9DB2FA2Fb83FA5',
+        'abi_path': 'source_contract_abi.json',
         'chain_id': 11155111
     },
     'private_key': '0x8bc9da6713e5b2a9d861f6e147034234b47f938be43eb2c4120b19b169bb1d21',
@@ -31,7 +31,7 @@ class CrossChainBridge:
         self.networks = {}
         self.setup_networks()
         
-        self.account = self.networks['second_network']['web3'].eth.account.from_key(config['private_key'])
+        self.account = self.networks['first_network']['web3'].eth.account.from_key(config['private_key'])
         
     def setup_networks(self):
         for network_name, network_config in self.config.items():
@@ -71,31 +71,44 @@ class CrossChainBridge:
             try:
                 contract = network_data['contract']
                 
-                event_abi = None
+                deposited_filter = None
+                released_filter = None
+                
+                deposited_abi = None
+                released_abi = None
+                
                 for abi_item in contract.abi:
-                    if abi_item['type'] == 'event' and abi_item['name'] == 'Deposited':
-                        event_abi = abi_item
-                        break
+                    if abi_item['type'] == 'event':
+                        if abi_item['name'] == 'Deposited':
+                            deposited_abi = abi_item
+                        elif abi_item['name'] == 'Released':
+                            released_abi = abi_item
+
+                if deposited_abi:
+                    deposited_filter = contract.events.Deposited.create_filter(
+                        fromBlock='latest'
+                    )
+                    logger.info(f"Deposited event filter setup for {network_name}")
                 
-                if not event_abi:
-                    logger.warning(f"Deposited event not found in ABI for {network_name}")
-                    continue
+                if released_abi:
+                    released_filter = contract.events.Released.create_filter(
+                        fromBlock='latest'
+                    )
+                    logger.info(f"Released event filter setup for {network_name}")
                 
-                event_filter = contract.events.Deposited.create_filter(
-                    fromBlock='latest'
-                )
-                
-                event_filters[network_name] = event_filter
-                logger.info(f"Event filter setup for {network_name}")
+                event_filters[network_name] = {
+                    'deposited': deposited_filter,
+                    'released': released_filter
+                }
                 
             except Exception as e:
-                logger.error(f"Error setting up event filter for {network_name}: {e}")
+                logger.error(f"Error setting up event filters for {network_name}: {e}")
         
         return event_filters
     
     def handle_deposited_event(self, event, source_network: str):
         try:
-            logger.info(f"Received Deposited event from {source_network}: {event}")
+            logger.info(f"Received Deposited event from {source_network}")
             
             event_data = event['args']
             deposit_id = event_data['id']
@@ -118,6 +131,29 @@ class CrossChainBridge:
         except Exception as e:
             logger.error(f"Error handling Deposited event from {source_network}: {e}")
     
+    def handle_released_event(self, event, source_network: str):
+        try:
+            logger.info(f"Received Released event from {source_network}")
+            
+            event_data = event['args']
+            release_id = event_data['id']
+            to_address = event_data['to']
+            amount = event_data['amount']
+            chain_id = event_data['chainId']
+            
+            target_network = self.get_target_network(source_network)
+            
+            self.call_deposit_method(
+                release_id, 
+                to_address, 
+                amount, 
+                chain_id, 
+                target_network
+            )
+            
+        except Exception as e:
+            logger.error(f"Error handling Released event from {source_network}: {e}")
+    
     def get_target_network(self, source_network: str) -> str:
         if source_network == 'first_network':
             return 'second_network'
@@ -134,6 +170,8 @@ class CrossChainBridge:
             
             logger.info(f"Calling release in {target_network} for deposit {deposit_id.hex()}")
             
+            nonce = web3.eth.get_transaction_count(self.account.address)
+            
             transaction = contract.functions.release(
                 deposit_id,
                 Web3.to_checksum_address(to),
@@ -141,7 +179,7 @@ class CrossChainBridge:
                 source_chain_id
             ).build_transaction({
                 'from': self.account.address,
-                'nonce': web3.eth.get_transaction_count(self.account.address),
+                'nonce': nonce,
                 'gas': 200000,
                 'gasPrice': web3.eth.gas_price
             })
@@ -162,8 +200,43 @@ class CrossChainBridge:
         except Exception as e:
             logger.error(f"Error calling release method in {target_network}: {e}")
     
+    def call_deposit_method(self, deposit_id: str, to: str, amount: int, chain_id: int, target_network: str):
+        try:
+            target_network_data = self.networks[target_network]
+            contract = target_network_data['contract']
+            web3 = target_network_data['web3']
+            
+            logger.info(f"Calling deposit in {target_network} for ID {deposit_id.hex()}")
+            
+            nonce = web3.eth.get_transaction_count(self.account.address)
+            
+            transaction = contract.functions.deposit(
+                amount
+            ).build_transaction({
+                'from': self.account.address,
+                'nonce': nonce,
+                'gas': 200000,
+                'gasPrice': web3.eth.gas_price
+            })
+            
+            signed_txn = web3.eth.account.sign_transaction(
+                transaction, self.config['private_key']
+            )
+            
+            tx_hash = web3.eth.send_raw_transaction(signed_txn.rawTransaction)
+            logger.info(f"Deposit transaction sent to {target_network}: {tx_hash.hex()}")
+            
+            receipt = web3.eth.wait_for_transaction_receipt(tx_hash)
+            if receipt.status == 1:
+                logger.info(f"Deposit successful in {target_network}! Tx: {tx_hash.hex()}")
+            else:
+                logger.error(f"Deposit failed in {target_network}! Tx: {tx_hash.hex()}")
+                
+        except Exception as e:
+            logger.error(f"Error calling deposit method in {target_network}: {e}")
+    
     async def start_monitoring(self):
-        logger.info("Starting event monitoring for both networks...")
+        logger.info("Starting event monitoring for both networks and both events...")
         
         event_filters = self.setup_event_filters()
         
@@ -173,22 +246,41 @@ class CrossChainBridge:
         
         while True:
             try:
-                for network_name, event_filter in event_filters.items():
+                for network_name, filters in event_filters.items():
                     try:
-                        new_entries = event_filter.get_new_entries()
+                        if filters['deposited']:
+                            deposited_entries = filters['deposited'].get_new_entries()
+                            for event in deposited_entries:
+                                self.handle_deposited_event(event, network_name)
                         
-                        for event in new_entries:
-                            self.handle_deposited_event(event, network_name)
+                        if filters['released']:
+                            released_entries = filters['released'].get_new_entries()
+                            for event in released_entries:
+                                self.handle_released_event(event, network_name)
                             
                     except Exception as e:
                         logger.error(f"Error checking events in {network_name}: {e}")
                         try:
-                            event_filters[network_name] = self.networks[network_name]['contract'].events.Deposited.create_filter(
-                                fromBlock='latest'
-                            )
-                            logger.info(f"Recreated event filter for {network_name}")
+                            contract = self.networks[network_name]['contract']
+                            
+                            deposited_abi = None
+                            released_abi = None
+                            
+                            for abi_item in contract.abi:
+                                if abi_item['type'] == 'event':
+                                    if abi_item['name'] == 'Deposited':
+                                        deposited_abi = abi_item
+                                    elif abi_item['name'] == 'Released':
+                                        released_abi = abi_item
+                            
+                            if deposited_abi:
+                                filters['deposited'] = contract.events.Deposited.create_filter(fromBlock='latest')
+                            if released_abi:
+                                filters['released'] = contract.events.Released.create_filter(fromBlock='latest')
+                                
+                            logger.info(f"Recreated event filters for {network_name}")
                         except Exception as filter_error:
-                            logger.error(f"Failed to recreate filter for {network_name}: {filter_error}")
+                            logger.error(f"Failed to recreate filters for {network_name}: {filter_error}")
                 
                 await asyncio.sleep(self.config['poll_interval'])
                 
